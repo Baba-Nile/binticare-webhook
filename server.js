@@ -6,8 +6,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── Firebase Admin Setup ──
-// Uses environment variable SERVICE_ACCOUNT_JSON set in Render dashboard
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
 admin.initializeApp({
@@ -17,44 +15,44 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// ── Health check ──
 app.get('/', (req, res) => {
   res.json({ status: 'BintiCare webhook server running ✅' });
 });
 
-// ── PayNecta Webhook Endpoint ──
 app.post('/webhook/paynecta', async (req, res) => {
   try {
     const payload = req.body;
     console.log('PayNecta webhook received:', JSON.stringify(payload));
 
-    // Extract donation data from PayNecta payload
+    // PayNecta wraps data inside a "data" object
+    const d = payload.data || payload;
+    const transaction = d.transaction || {};
+    const customer = d.customer || {};
+    const link = d.link || {};
+    const paymentMethod = d.payment_method || {};
+
     const donation = {
-      firstName:    payload.first_name   || payload.firstName   || '',
-      lastName:     payload.last_name    || payload.lastName    || '',
-      phone:        payload.phone        || payload.msisdn       || '',
-      amount:       Number(payload.amount || payload.Amount || 0),
-      currency:     'KES',
-      reference:    payload.reference    || payload.MpesaReceiptNumber || payload.transaction_id || '',
-      status:       payload.status       || 'completed',
-      paymentLink:  payload.payment_link || payload.link_slug   || 'binticare',
-      channel:      payload.channel      || 'M-Pesa',
-      createdAt:    admin.firestore.FieldValue.serverTimestamp(),
-      rawPayload:   payload
+      firstName:   customer.first_name  || d.first_name  || '',
+      lastName:    customer.last_name   || d.last_name   || '',
+      phone:       customer.mobile_number || transaction.mobile_number || d.PhoneNumber || '',
+      amount:      Number(transaction.amount || d.Amount || d.amount || 0),
+      currency:    transaction.currency || 'KES',
+      reference:   d.MpesaReceiptNumber || transaction.reference || transaction.MpesaReceiptNumber || '',
+      status:      transaction.status   || d.status || 'completed',
+      paymentLink: link.name || link.slug || 'binticare',
+      channel:     paymentMethod.name   || 'M-Pesa',
+      createdAt:   admin.firestore.FieldValue.serverTimestamp(),
+      rawPayload:  payload
     };
 
-    // Only save completed payments
+    console.log('Parsed donation:', JSON.stringify(donation));
+
     if (
-      donation.amount > 0 ||
-      payload.status === 'completed' ||
-      payload.status === 'success' ||
-      payload.ResultCode === '0' ||
-      payload.ResultCode === 0
+      donation.amount > 0 &&
+      (donation.status === 'completed' || donation.status === 'success' || payload.event_type === 'payment.completed')
     ) {
-      // Save donation to Firestore
       const docRef = await db.collection('donations').add(donation);
 
-      // Update donation stats summary
       const statsRef = db.collection('stats').doc('donations');
       await db.runTransaction(async (t) => {
         const statsDoc = await t.get(statsRef);
@@ -76,7 +74,7 @@ app.post('/webhook/paynecta', async (req, res) => {
       console.log(`✅ Donation saved: KES ${donation.amount} from ${donation.firstName} ${donation.lastName} [${docRef.id}]`);
       res.status(200).json({ success: true, id: docRef.id });
     } else {
-      console.log('⚠️ Payment not completed, skipping save.');
+      console.log(`⚠️ Skipped. Amount: ${donation.amount}, Status: ${donation.status}, Event: ${payload.event_type}`);
       res.status(200).json({ success: false, message: 'Payment not completed' });
     }
   } catch (err) {
@@ -85,7 +83,6 @@ app.post('/webhook/paynecta', async (req, res) => {
   }
 });
 
-// ── Get donation stats (used by website) ──
 app.get('/stats', async (req, res) => {
   try {
     const statsDoc = await db.collection('stats').doc('donations').get();
