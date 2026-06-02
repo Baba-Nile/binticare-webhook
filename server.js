@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
 app.post('/webhook/paynecta', async (req, res) => {
   try {
     const payload = req.body;
-    console.log('PayNecta webhook received:', JSON.stringify(payload));
+    console.log('=== FULL PAYLOAD ===', JSON.stringify(payload, null, 2));
 
     // PayNecta wraps data inside a "data" object
     const d = payload.data || payload;
@@ -31,10 +31,50 @@ app.post('/webhook/paynecta', async (req, res) => {
     const link = d.link || {};
     const paymentMethod = d.payment_method || {};
 
+    // Log all possible name locations to find where PayNecta puts the name
+    console.log('Name fields check:');
+    console.log('  d.first_name:', d.first_name);
+    console.log('  d.last_name:', d.last_name);
+    console.log('  d.FirstName:', d.FirstName);
+    console.log('  d.LastName:', d.LastName);
+    console.log('  d.name:', d.name);
+    console.log('  d.Name:', d.Name);
+    console.log('  d.full_name:', d.full_name);
+    console.log('  d.FullName:', d.FullName);
+    console.log('  customer.first_name:', customer.first_name);
+    console.log('  customer.last_name:', customer.last_name);
+    console.log('  customer.name:', customer.name);
+    console.log('  customer.full_name:', customer.full_name);
+    console.log('  transaction.first_name:', transaction.first_name);
+    console.log('  transaction.last_name:', transaction.last_name);
+    console.log('  payload.first_name:', payload.first_name);
+    console.log('  payload.last_name:', payload.last_name);
+
+    // Extract phone for fallback display
+    const phone = customer.mobile_number || transaction.mobile_number || d.PhoneNumber || '';
+
+    // Try every possible location PayNecta might put the name
+    const firstName =
+      d.first_name || d.FirstName || d.fname ||
+      customer.first_name || customer.FirstName ||
+      transaction.first_name ||
+      payload.first_name || '';
+
+    const lastName =
+      d.last_name || d.LastName || d.lname ||
+      customer.last_name || customer.LastName ||
+      transaction.last_name ||
+      payload.last_name || '';
+
+    // If name is still empty, use formatted phone as display name
+    const displayName = (firstName + ' ' + lastName).trim() ||
+      (phone ? 'Donor ' + phone.slice(-4) : 'Anonymous Donor');
+
     const donation = {
-      firstName:   customer.first_name  || d.first_name  || '',
-      lastName:    customer.last_name   || d.last_name   || '',
-      phone:       customer.mobile_number || transaction.mobile_number || d.PhoneNumber || '',
+      firstName:   firstName || displayName,
+      lastName:    lastName,
+      displayName: displayName,
+      phone:       phone,
       amount:      Number(transaction.amount || d.Amount || d.amount || 0),
       currency:    transaction.currency || 'KES',
       reference:   d.MpesaReceiptNumber || transaction.reference || transaction.MpesaReceiptNumber || '',
@@ -71,10 +111,10 @@ app.post('/webhook/paynecta', async (req, res) => {
         }
       });
 
-      console.log(`✅ Donation saved: KES ${donation.amount} from ${donation.firstName} ${donation.lastName} [${docRef.id}]`);
+      console.log(`✅ Saved: KES ${donation.amount} from "${displayName}" [${docRef.id}]`);
       res.status(200).json({ success: true, id: docRef.id });
     } else {
-      console.log(`⚠️ Skipped. Amount: ${donation.amount}, Status: ${donation.status}, Event: ${payload.event_type}`);
+      console.log(`⚠️ Skipped. Amount: ${donation.amount}, Status: ${donation.status}`);
       res.status(200).json({ success: false, message: 'Payment not completed' });
     }
   } catch (err) {
